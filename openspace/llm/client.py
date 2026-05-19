@@ -1,6 +1,7 @@
 import litellm
 import json
 import asyncio
+import os
 import time
 from typing import List, Sequence, Union, Dict, Optional
 from openai.types.chat import ChatCompletionToolParam
@@ -217,8 +218,22 @@ def _resolve_tool_call_target(
     return None, []
 
 
-DEFAULT_SUMMARIZE_THRESHOLD_CHARS = 200000  # ~50K tokens, lowered from 400K to prevent context overflow
-MAX_TOOL_RESULT_CHARS = 200000  # Fallback truncation limit when summarization fails (~50K tokens)
+def _env_int(name: str, default: int) -> int:
+    try:
+        value = int(os.getenv(name, "").strip())
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+DEFAULT_SUMMARIZE_THRESHOLD_CHARS = _env_int(
+    "OPENSPACE_TOOL_SUMMARIZE_THRESHOLD_CHARS",
+    200000,
+)  # ~50K tokens by default; can be raised for large-context local models.
+MAX_TOOL_RESULT_CHARS = _env_int(
+    "OPENSPACE_MAX_TOOL_RESULT_CHARS",
+    DEFAULT_SUMMARIZE_THRESHOLD_CHARS,
+)  # Fallback truncation limit when summarization fails.
 
 async def _summarize_tool_result(
     content: str,

@@ -63,6 +63,17 @@ async def test_run_shell_command_timeout_reports_cleanup():
 
 
 @pytest.mark.asyncio
+async def test_run_bash_script_uses_platform_shell():
+    connector = LocalShellConnector()
+    script = "Write-Output 'platform_shell_ok'" if platform.system() == "Windows" else "echo platform_shell_ok"
+
+    result = await connector.run_bash_script(script, timeout=15)
+
+    assert result["returncode"] == 0
+    assert "platform_shell_ok" in result["content"]
+
+
+@pytest.mark.asyncio
 async def test_run_shell_timeout_cap_allows_longer_work():
     class FakeConnector:
         def __init__(self):

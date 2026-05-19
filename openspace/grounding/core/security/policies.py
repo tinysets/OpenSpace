@@ -1,4 +1,5 @@
 import asyncio
+import os
 import sys
 from typing import Callable, Awaitable, Dict, Optional
 from ..types import SecurityPolicy, BackendType
@@ -77,6 +78,12 @@ class SecurityPolicyManager:
         policy = self.get_policy(backend_type)
 
         if policy.check(command=command):
+            return True
+
+        if _env_flag_enabled("OPENSPACE_SECURITY_AUTO_ALLOW") or (
+            backend_type == BackendType.SHELL
+            and _env_flag_enabled("OPENSPACE_SHELL_SECURITY_AUTO_ALLOW")
+        ):
             return True
 
         # Find dangerous tokens
@@ -160,3 +167,8 @@ class SecurityPolicyManager:
         )
 
         return await self._ask_user(message)
+
+
+def _env_flag_enabled(name: str) -> bool:
+    value = os.getenv(name, "").strip().lower()
+    return value in {"1", "true", "yes", "y", "on", "allow", "always"}

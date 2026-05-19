@@ -1,4 +1,6 @@
 import json
+import getpass
+import platform
 import re
 from typing import Any, Tuple, Union
 
@@ -12,6 +14,22 @@ from openspace.llm import LLMClient
 from openspace.utils.logging import Logger
 
 logger = Logger.get_logger(__name__)
+
+
+def _is_windows() -> bool:
+    return platform.system() == "Windows"
+
+
+def _platform_shell_name() -> str:
+    return "PowerShell" if _is_windows() else "Bash"
+
+
+def _platform_shell_lang() -> str:
+    return "powershell" if _is_windows() else "bash"
+
+
+def _ps_single_quote(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
 
 
 def _parse_shell_result(result: Any) -> Tuple[str, str, int]:
@@ -112,7 +130,7 @@ class PythonScriptTool(BaseTool):
 
 class BashScriptTool(BaseTool):
     _name = "_bash_exec"
-    _description = "Internal helper: run bash script."
+    _description = "Internal helper: run PowerShell on Windows and bash on POSIX."
 
     def __init__(self, session: "ShellSession", default_working_dir: str = None, default_env: dict = None, default_conda_env: str = None):
         self._session = session
@@ -155,8 +173,12 @@ class ReadFileTool(BaseTool):
 
     async def _arun(self, path: str) -> ToolResult:
         try:
+            if _is_windows():
+                script = f"Get-Content -Raw -Encoding UTF8 -LiteralPath {_ps_single_quote(path)}"
+            else:
+                script = f'cat -- "{path}"'
             result = await self._session.connector.run_bash_script(
-                f'cat -- "{path}"',
+                script,
                 timeout=15,
             )
             stdout, stderr, rc = _parse_shell_result(result)
@@ -242,8 +264,16 @@ class ListDirTool(BaseTool):
 
     async def _arun(self, path: str = ".") -> ToolResult:
         try:
+            if _is_windows():
+                script = (
+                    f"Get-ChildItem -Force -LiteralPath {_ps_single_quote(path)} | "
+                    "Select-Object Mode,Length,LastWriteTime,Name | "
+                    "Format-Table -AutoSize | Out-String -Width 4096"
+                )
+            else:
+                script = f'ls -la "{path}"'
             result = await self._session.connector.run_bash_script(
-                f'ls -la "{path}"',
+                script,
                 timeout=15,
             )
             stdout, stderr, rc = _parse_shell_result(result)
@@ -274,6 +304,7 @@ class RunShellTool(BaseTool):
     _name = "run_shell"
     _description = (
         "Execute a shell command as-is and return raw stdout/stderr. "
+        "On Windows this runs PowerShell; on Linux/macOS this runs Bash. "
         "You provide the exact command (or script); it is run without "
         "interpretation, modification, or automatic retry. "
         "If the task requires the tool itself to reason, write code, "
@@ -314,7 +345,7 @@ class ShellAgentTool(BaseTool):
     _name = "shell_agent"
     _description = """Delegate a task to an intelligent shell agent that autonomously writes and executes code, and will automatically retry and fix errors when possible.
 Give it a natural-language task description. The internal agent will:
-- Decide whether to use Python or Bash
+- Decide whether to use Python or the platform shell
 - Write and execute code, inspect output, and iterate
 - Automatically retry and fix errors (up to several rounds)
 
@@ -323,7 +354,7 @@ If you already have the exact command/script to run, use run_shell instead."""
     
     backend_type = BackendType.SHELL
     _CODE_RGX = re.compile(
-        r"```(?P<lang>python|py|bash|shell|sh)[^\n]*\n(?P<code>.*?)```",
+        r"```(?P<lang>python|py|bash|shell|sh|powershell|pwsh|ps1)[^\n]*\n(?P<code>.*?)```",
         re.S | re.I,
     )
 
@@ -362,7 +393,7 @@ If you already have the exact command/script to run, use run_shell instead."""
         Get system information for shell agent.
         
         First tries to get comprehensive info from local server's /platform endpoint.
-        Falls back to simple bash commands if that fails.
+        Falls back to local Python platform detection if that fails.
         
         Returns:
             Dict with at least 'platform' and 'username' keys
@@ -394,22 +425,15 @@ If you already have the exact command/script to run, use run_shell instead."""
                                 return self._system_info
                     
                     except ImportError:
-                        logger.debug("SystemInfoClient not available, using bash commands")
+                        logger.debug("SystemInfoClient not available, using local Python platform detection")
                 else:
                     logger.debug("No server base_url (local mode), skipping HTTP system info")
                 
-                # Fallback: use simple bash commands (original method)
-                platform_result = await self._session.connector.run_bash_script("uname -s", timeout=5)
-                username_result = await self._session.connector.run_bash_script("whoami", timeout=5)
-                
-                platform = self._extract_output(platform_result).strip()
-                username = self._extract_output(username_result).strip()
-                
                 self._system_info = {
-                    "platform": platform,
-                    "username": username
+                    "platform": platform.system(),
+                    "username": getpass.getuser(),
                 }
-                logger.debug(f"Got system info from bash: {platform}")
+                logger.debug(f"Got system info from local Python: {self._system_info['platform']}")
             
             except Exception as e:
                 logger.warning(f"Failed to get system info: {e}, using defaults")
@@ -442,6 +466,14 @@ If you already have the exact command/script to run, use run_shell instead."""
         
         env_section = "\n".join([f"# {ctx}" for ctx in env_context]) if env_context else ""
         
+        shell_name = "PowerShell" if sys_info["platform"] == "Windows" else "Bash"
+        shell_lang = "powershell" if sys_info["platform"] == "Windows" else "bash"
+        shell_examples = (
+            "Get-Location, Get-ChildItem -Force, Get-Process, Get-Content -Raw -Encoding UTF8 -LiteralPath <path>"
+            if sys_info["platform"] == "Windows"
+            else "pwd, ls -la, ps, df, cat"
+        )
+
         SHELL_AGENT_SYSTEM_PROMPT = f"""You are an expert system administrator and programmer focused on executing tasks efficiently.
 
 # System: {sys_info["platform"]}, User: {sys_info["username"]}
@@ -450,29 +482,29 @@ If you already have the exact command/script to run, use run_shell instead."""
 # Your task: {task}
 
 # IMPORTANT: You MUST provide exactly ONE code block in EVERY response
-# Either ```bash or ```python - never respond without code
+# Either ```{shell_lang} or ```python - never respond without code
 
 # Available actions:
-1. Execute bash commands: ```bash <commands>```
+1. Execute {shell_name} commands: ```{shell_lang} <commands>```
 2. Write Python code: ```python <code>```
 
 # Rules:
 - ALWAYS include a code block in your response
 - Write EXACTLY ONE code block per response
-- If you need to understand the current environment, start with bash commands like: pwd, ls, ps, df, etc.
+- If you need to understand the current environment, start with {shell_name} commands like: {shell_examples}
 - If you get errors, analyze and fix them in the next iteration
 - For sudo: use 'echo {self.client_password} | sudo -S <command>'
 - The environment (working directory, conda env) is managed automatically
 
-# CRITICAL: Avoid quote escaping errors in bash:
+# CRITICAL: Avoid quote escaping errors in shell:
 - For complex string operations (JSON, multi-line text, special chars): ALWAYS use Python with heredoc
 - Good: ```python <your code>```
-- Bad: bash commands with nested quotes like: echo "$(cat 'file' | grep "pattern")"
-- When reading/writing files with complex content: prefer Python over bash
-- When processing JSON: ALWAYS use Python's json module, never bash string manipulation
+- Bad: shell commands with deeply nested quote escaping
+- When reading/writing files with complex content: prefer Python
+- When processing JSON: ALWAYS use Python's json module, never shell string manipulation
 
 # Before executing, check if task output already exists:
-- Use 'ls -la <directory>' to check for existing files
+- Use the platform shell to check for existing files before recreating them
 - If files exist, read and verify them first before recreating
 - Avoid redundant work - reuse existing valid outputs
 
@@ -584,7 +616,7 @@ When you encounter an UNRECOVERABLE error that you cannot fix, end your response
         
         Returns:
             Tuple[Optional[Dict], str]: (code_info, execution_result)
-            - code_info: {"lang": "python/bash", "code": "...", "status": "success/error"}
+            - code_info: {"lang": "python/powershell/bash", "code": "...", "status": "success/error"}
             - execution_result: the execution result string
         """
         matches = list(self._CODE_RGX.finditer(response))
@@ -593,8 +625,13 @@ When you encounter an UNRECOVERABLE error that you cannot fix, end your response
         
         lang, code = matches[0]["lang"].lower(), matches[0]["code"].strip()
         
-        # standardize the language name
-        lang_normalized = "python" if lang in ["python", "py"] else "bash"
+        # Standardize the language name. The shell helper executes PowerShell
+        # on Windows and bash on POSIX, regardless of its historical name.
+        lang_normalized = (
+            "python"
+            if lang in ["python", "py"]
+            else _platform_shell_lang()
+        )
         
         code_info = {
             "lang": lang_normalized,
@@ -607,7 +644,7 @@ When you encounter an UNRECOVERABLE error that you cannot fix, end your response
             if lang in ["python", "py"]:
                 helper = self._py_tool
                 result = await helper._arun(code)
-            elif lang in ["bash", "shell", "sh"]:
+            elif lang in ["bash", "shell", "sh", "powershell", "pwsh", "ps1"]:
                 helper = self._bash_tool
                 result = await helper._arun(code)
             else:

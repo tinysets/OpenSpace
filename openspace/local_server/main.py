@@ -108,17 +108,21 @@ def get_conda_activation_prefix(conda_env: str = None) -> str:
             return f'conda activate {conda_env} && '
 
 
+def ps_single_quote(value: str) -> str:
+    """Return a PowerShell single-quoted literal."""
+    return "'" + value.replace("'", "''") + "'"
+
+
 def wrap_script_with_conda(script: str, conda_env: str = None) -> str:
     """
-    Wrap script with conda activation command.
+    Wrap a platform shell script with conda activation command.
     If conda is not available, returns original script without conda activation.
     """
     if not conda_env:
         return script
     
     if platform_name == "Windows":
-        activation_prefix = get_conda_activation_prefix(conda_env)
-        return f"{activation_prefix}{script}"
+        return f"conda activate {ps_single_quote(conda_env)}\n{script}"
     else:
         conda_paths = [
             os.path.expanduser("~/miniconda3/etc/profile.d/conda.sh"),
@@ -150,6 +154,19 @@ fi
             # Conda not found - log warning and execute script directly without conda
             logger.warning(f"Conda environment '{conda_env}' requested but conda not found. Executing with system Python.")
             return script
+
+
+def prepare_windows_powershell_script(script: str, conda_env: str = None) -> str:
+    """Prepare a PowerShell script for Windows local server execution."""
+    prelude = [
+        "$ErrorActionPreference = 'Stop'",
+        "$ProgressPreference = 'SilentlyContinue'",
+        "$OutputEncoding = [System.Text.UTF8Encoding]::new($false)",
+        "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)",
+    ]
+    if conda_env:
+        prelude.append(f"conda activate {ps_single_quote(conda_env)}")
+    return "\n".join(prelude + [script, ""])
 
 
 health_checker = None
@@ -527,25 +544,38 @@ def run_bash_script():
     if not script:
         return jsonify({'status': 'error', 'message': 'Script not supplied!'}), 400
     
-    # Generate unique filename
+    # Keep the endpoint name for API compatibility. Windows executes
+    # PowerShell scripts; POSIX platforms execute bash scripts.
     if platform_name == "Windows":
-        temp_filename = os.path.join(tempfile.gettempdir(), f"bash_exec_{uuid.uuid4().hex}.sh")
+        temp_filename = os.path.join(tempfile.gettempdir(), f"powershell_exec_{uuid.uuid4().hex}.ps1")
+        final_script = prepare_windows_powershell_script(script, conda_env)
+        temp_encoding = "utf-8-sig"
     else:
         temp_filename = f"/tmp/bash_exec_{uuid.uuid4().hex}.sh"
+        final_script = wrap_script_with_conda(script, conda_env)
+        temp_encoding = "utf-8"
     
     try:
-        # Wrap script with conda activation if needed
-        final_script = wrap_script_with_conda(script, conda_env)
-        
-        with open(temp_filename, 'w') as f:
+        with open(temp_filename, 'w', encoding=temp_encoding, newline="\n") as f:
             f.write(final_script)
         
         os.chmod(temp_filename, 0o755)
         
         if platform_name == "Windows":
-            shell_cmd = ['bash', temp_filename]
+            shell_cmd = [
+                'powershell.exe',
+                '-NoLogo',
+                '-NoProfile',
+                '-NonInteractive',
+                '-ExecutionPolicy',
+                'Bypass',
+                '-File',
+                temp_filename,
+            ]
+            subprocess_kwargs = {'creationflags': subprocess.CREATE_NO_WINDOW}
         else:
             shell_cmd = ['/bin/bash', temp_filename]
+            subprocess_kwargs = {}
         
         # Prepare environment variables
         exec_env = os.environ.copy()
@@ -557,9 +587,12 @@ def run_bash_script():
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            encoding='utf-8',
+            errors='replace',
             timeout=timeout,
             cwd=working_dir or os.getcwd(),
-            env=exec_env
+            env=exec_env,
+            **subprocess_kwargs
         )
         
         os.unlink(temp_filename)

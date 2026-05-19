@@ -19,6 +19,8 @@ Desktop.ini
 .pytest_cache/
 .venv/
 .test-venv/
+.codex-learning/
+.learn-sbt-animancer/
 
 # Distribution / packaging
 dist/

@@ -209,6 +209,7 @@ def _create_argument_parser() -> argparse.ArgumentParser:
     # Execution arguments
     parser.add_argument('--max-iterations', type=int, help='Maximum iteration count')
     parser.add_argument('--timeout', type=float, help='LLM API call timeout (seconds)')
+    parser.add_argument('--workspace', type=str, help='Task workspace directory')
     
     # UI arguments
     parser.add_argument('--interactive', '-i', action='store_true', help='Force interactive mode')
@@ -372,6 +373,9 @@ def _load_config(args) -> OpenSpaceConfig:
         cli_overrides['grounding_max_iterations'] = args.max_iterations
     if args.timeout is not None:
         cli_overrides['llm_timeout'] = args.timeout
+    workspace_dir = args.workspace or os.environ.get("OPENSPACE_WORKSPACE")
+    if workspace_dir:
+        cli_overrides['workspace_dir'] = workspace_dir
     if args.log_level:
         cli_overrides['log_level'] = args.log_level
 

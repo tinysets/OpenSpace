@@ -1,5 +1,5 @@
 """
-Local Shell Connector — execute Python / Bash scripts directly via subprocess.
+Local Shell Connector — execute Python / shell scripts directly via subprocess.
 
 This connector has the **same public API** as ShellConnector (HTTP version)
 but runs everything in-process, removing the need for a local_server.
@@ -60,13 +60,19 @@ def _get_conda_activation_prefix(conda_env: str | None) -> str:
         return f"conda activate {conda_env} && "
 
 
+def _ps_single_quote(value: str) -> str:
+    """Return a PowerShell single-quoted literal."""
+    return "'" + value.replace("'", "''") + "'"
+
+
 def _wrap_script_with_conda(script: str, conda_env: str | None) -> str:
-    """Wrap bash script with conda activation if needed."""
+    """Wrap a platform shell script with conda activation if needed."""
     if not conda_env:
         return script
     if platform_name == "Windows":
-        prefix = _get_conda_activation_prefix(conda_env)
-        return f"{prefix}{script}"
+        # In PowerShell, conda activation is only available after conda init.
+        # Keep this as a best-effort prefix instead of injecting cmd.exe syntax.
+        return f"conda activate {_ps_single_quote(conda_env)}\n{script}"
     else:
         conda_paths = [
             os.path.expanduser("~/miniconda3/etc/profile.d/conda.sh"),
@@ -94,6 +100,19 @@ def _wrap_script_with_conda(script: str, conda_env: str | None) -> str:
                 "Executing with system Python.", conda_env
             )
             return script
+
+
+def _prepare_windows_powershell_script(script: str, conda_env: str | None) -> str:
+    """Prepare a PowerShell script for Windows local shell execution."""
+    prelude = [
+        "$ErrorActionPreference = 'Stop'",
+        "$ProgressPreference = 'SilentlyContinue'",
+        "$OutputEncoding = [System.Text.UTF8Encoding]::new($false)",
+        "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)",
+    ]
+    if conda_env:
+        prelude.append(f"conda activate {_ps_single_quote(conda_env)}")
+    return "\n".join(prelude + [script, ""])
 
 
 def _subprocess_group_kwargs() -> Dict[str, Any]:
@@ -216,7 +235,7 @@ class LocalShellConnector(BaseConnector[Any]):
         self.retry_interval = retry_interval
         self._security_manager = security_manager
         # Provide base_url = None so ShellSession._get_system_info falls back
-        # to bash-based detection instead of HTTP.
+        # to local Python-based detection instead of HTTP.
         self.base_url: str | None = None
 
     # ------------------------------------------------------------------
@@ -434,7 +453,10 @@ class LocalShellConnector(BaseConnector[Any]):
         env: Optional[Dict[str, str]] = None,
         conda_env: Optional[str] = None,
     ) -> Any:
-        """Execute a Bash script locally.
+        """Execute a platform shell script locally.
+
+        For API compatibility the method name remains ``run_bash_script``.
+        On Windows it executes PowerShell; on POSIX it executes Bash.
 
         Return format matches the server's ``/run_bash_script`` endpoint.
         """
@@ -445,33 +467,48 @@ class LocalShellConnector(BaseConnector[Any]):
                 BackendType.SHELL, script
             )
             if not allowed:
-                logger.error("SecurityPolicy blocked bash script execution")
-                raise PermissionError("SecurityPolicy: bash script execution blocked")
-
-        # Wrap with conda if needed
-        final_script = _wrap_script_with_conda(script, conda_env)
+                logger.error("SecurityPolicy blocked shell script execution")
+                raise PermissionError("SecurityPolicy: shell script execution blocked")
 
         # Write to temp file (same as local_server)
         suffix = uuid.uuid4().hex
         if platform_name == "Windows":
-            temp_filename = os.path.join(tempfile.gettempdir(), f"bash_exec_{suffix}.sh")
+            temp_filename = os.path.join(tempfile.gettempdir(), f"powershell_exec_{suffix}.ps1")
+            final_script = _prepare_windows_powershell_script(script, conda_env)
+            temp_encoding = "utf-8-sig"
         else:
             temp_filename = f"/tmp/bash_exec_{suffix}.sh"
+            final_script = _wrap_script_with_conda(script, conda_env)
+            temp_encoding = "utf-8"
 
         try:
-            with open(temp_filename, "w") as f:
+            with open(temp_filename, "w", encoding=temp_encoding, newline="\n") as f:
                 f.write(final_script)
             os.chmod(temp_filename, 0o755)
 
             logger.info(
-                "Executing bash script locally with timeout=%d seconds%s%s%s",
+                "Executing %s script locally with timeout=%d seconds%s%s%s",
+                "PowerShell" if platform_name == "Windows" else "bash",
                 timeout,
                 f", working_dir={working_dir}" if working_dir else "",
                 f", env={list(env.keys())}" if env else "",
                 f", conda_env={conda_env}" if conda_env else "",
             )
 
-            shell_cmd = ["bash", temp_filename] if platform_name == "Windows" else ["/bin/bash", temp_filename]
+            shell_cmd = (
+                [
+                    "powershell.exe",
+                    "-NoLogo",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                    temp_filename,
+                ]
+                if platform_name == "Windows"
+                else ["/bin/bash", temp_filename]
+            )
             result = await self._run_subprocess(
                 shell_cmd,
                 timeout=timeout,

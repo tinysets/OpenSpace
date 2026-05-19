@@ -50,7 +50,7 @@ class ShellConfig(BackendConfig):
         max_retries: Maximum number of retry attempts for failed operations
         retry_interval: Wait time between retries (seconds)
         default_shell: Path to default shell executable
-        working_dir: Default working directory for bash scripts
+        working_dir: Default working directory for shell scripts
         env: Default environment variables for shell operations
         conda_env: Conda environment name to activate before execution (optional)
         default_port: Default port for shell server connection (only used in server mode)
@@ -58,7 +58,7 @@ class ShellConfig(BackendConfig):
     mode: Literal["local", "server"] = Field("local", description="Execution mode: 'local' (in-process subprocess) or 'server' (HTTP local_server)")
     retry_interval: float = Field(3.0, ge=0.1, le=60.0, description="Wait time between retries in seconds")
     default_shell: str = Field("/bin/bash", description="Default shell path")
-    working_dir: Optional[str] = Field(None, description="Default working directory for bash scripts")
+    working_dir: Optional[str] = Field(None, description="Default working directory for shell scripts")
     env: Dict[str, str] = Field(default_factory=dict, description="Default environment variables")
     conda_env: Optional[str] = Field(None, description="Conda environment name to activate (e.g., 'myenv')")
     default_port: int = Field(5000, ge=1, le=65535, description="Default port for shell server")

@@ -152,10 +152,14 @@ class ShellConnector(AioHttpConnector):
         conda_env: Optional[str] = None
     ) -> Any:
         """
-        Execute Bash script on remote server
+        Execute a platform shell script on remote server.
+
+        The endpoint and method keep the historical ``bash`` name for API
+        compatibility. Windows local_server executes PowerShell; POSIX
+        local_server executes Bash.
         
         Args:
-            script: Bash script content (can be multi-line)
+            script: Platform shell script content (can be multi-line)
             timeout: Execution timeout in seconds (default 90 seconds)
             working_dir: Working directory for script execution (optional)
             env: Environment variables for script execution (optional)
@@ -172,19 +176,19 @@ class ShellConnector(AioHttpConnector):
             from openspace.grounding.core.types import BackendType
             allowed = await self._security_manager.check_command_allowed(BackendType.SHELL, script)
             if not allowed:
-                logger.error("SecurityPolicy blocked bash script execution")
-                raise PermissionError("SecurityPolicy: bash script execution blocked")
+                logger.error("SecurityPolicy blocked shell script execution")
+                raise PermissionError("SecurityPolicy: shell script execution blocked")
         
         payload = {"script": script, "working_dir": working_dir, "env": env, "conda_env": conda_env}
         logger.info(
-            "Executing bash script with timeout=%d seconds%s%s%s", 
+            "Executing platform shell script with timeout=%d seconds%s%s%s",
             timeout,
             f", working_dir={working_dir}" if working_dir else "",
             f", env={list(env.keys())}" if env else "",
             f", conda_env={conda_env}" if conda_env else ""
         )
         
-        # Bash script timed out, exit immediately without retry (timeout usually means script logic problem)
+        # Shell script timed out, exit immediately without retry (timeout usually means script logic problem)
         result = await self._retry_invoke(
             "POST /run_bash_script", 
             payload, 
@@ -194,6 +198,6 @@ class ShellConnector(AioHttpConnector):
         
         # Record execution result
         if isinstance(result, dict) and "returncode" in result:
-            logger.info("Bash script executed with return code: %d", result.get("returncode", -1))
+            logger.info("Platform shell script executed with return code: %d", result.get("returncode", -1))
         
         return result

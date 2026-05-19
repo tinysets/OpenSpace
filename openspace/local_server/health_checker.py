@@ -224,15 +224,15 @@ class HealthChecker:
         except Exception as e:
             return False, str(e)[:30]
     
-    def check_bash_script(self) -> Tuple[bool, str]:
-        """Functionally test Bash script execution"""
+    def check_shell_script(self) -> Tuple[bool, str]:
+        """Functionally test platform shell script execution"""
         if not self.feature_checker.check_shell_available():
             return False, "Feature N/A"
         
         try:
             response = requests.post(
                 f"{self.base_url}/run_bash_script",
-                json={"script": "echo bash_test_456"},
+                json={"script": "echo shell_test_456"},
                 timeout=5
             )
             
@@ -242,8 +242,8 @@ class HealthChecker:
             data = response.json()
             output = data.get('output', '')
             
-            if 'bash_test_456' in output:
-                return True, "Bash executed"
+            if 'shell_test_456' in output:
+                return True, "Shell executed"
             return False, "Execution failed"
             
         except Exception as e:
@@ -430,7 +430,7 @@ class HealthChecker:
             'Screen Size': self.check_screen_size,
             'Shell Command': self.check_shell_command,
             'Python Execution': self.check_python_execution,
-            'Bash Script': self.check_bash_script,
+            'Shell Script': self.check_shell_script,
             'File Operations': self.check_file_operations,
             'Desktop Path': self.check_desktop_path,
             'Window Management': self.check_window_management,
